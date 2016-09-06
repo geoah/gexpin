@@ -1,15 +1,16 @@
 package main
 
 import (
-	"encoding/json"
+	"flag"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 
-	api "github.com/ipfs/go-ipfs-api"
+	github "github.com/google/go-github/github"
+	ipfs "github.com/ipfs/go-ipfs-api"
+	gx "github.com/whyrusleeping/gx/gxutil"
+	oauth2 "golang.org/x/oauth2"
 )
 
 type pkgInfo struct {
@@ -24,6 +25,7 @@ var recent map[string]pkgInfo
 var lk sync.Mutex
 
 var log *os.File
+var ghlogin *string
 
 const pinlogFile = "pinlogs"
 
@@ -47,155 +49,59 @@ func init() {
 	recent = make(map[string]pkgInfo)
 }
 
-func logPin(ghurl, ref, vers string) error {
-	lk.Lock()
-	defer lk.Unlock()
-	_, err := fmt.Fprintf(log, "%s %s %s\n", ghurl, vers, ref)
-	return err
-}
-
-func getExternalIP() (string, error) {
-	resp, err := http.Get("https://api.ipify.org")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	out, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(out), nil
-}
-
 func main() {
+	// parse flags
+	listen := flag.String("listen", ":9444", "github token for stuff")
+	ghtoken := flag.String("ghtoken", "", "github token for stuff")
+	ghsecret := flag.String("ghsecret", "", "github token for stuff")
+	ghlogin = flag.String("ghlogin", "geoah", "github bot login name") // TODO(geoah) Get this from the API
+	flag.Parse()
+
+	// find our external IP address
 	myip, err := getExternalIP()
 	if err != nil {
 		fmt.Println("error getting external ip: ", err)
 		os.Exit(1)
 	}
 
-	sh := api.NewShell("localhost:5001")
+	// new ipfs api
+	ipsh := ipfs.NewShell("localhost:5001")
 
-	http.HandleFunc("/pin_package", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			w.WriteHeader(403)
-			return
-		}
+	// new gx pm
+	cfg, err := gx.LoadConfig()
+	if err != nil {
+		fmt.Println("error loading gx config", err)
+		os.Exit(1)
+	}
+	pm, err := gx.NewPM(cfg)
+	if err != nil {
+		fmt.Println("error getting new gx pm", err)
+		os.Exit(1)
+	}
 
-		ghurl := r.FormValue("ghurl")
-		if !strings.HasPrefix(ghurl, "github.com/") {
-			http.Error(w, "not a github url!", 400)
-			return
-		}
+	// new github client
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: *ghtoken},
+	)
+	tc := oauth2.NewClient(oauth2.NoContext, ts)
+	gh := github.NewClient(tc)
 
-		userpkg := strings.Replace(ghurl, "github.com/", "", 1)
+	// handle gx pin requests
+	pinAPI := newGxPinAPI(ipsh, myip)
+	http.HandleFunc("/pin_package", pinAPI.PinPackage)
+	http.HandleFunc("/status", pinAPI.Status)
+	http.HandleFunc("/node_addr", pinAPI.NodeAddress)
+	http.HandleFunc("/recent", pinAPI.Recent)
 
-		template := "https://raw.githubusercontent.com/%s/master/.gx/lastpubver"
-		url := fmt.Sprintf(template, userpkg)
-		resp, err := http.Get(url)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		defer resp.Body.Close()
+	// handle github pr requets
+	ghAPI := newGxGithubAPI(ipsh, gh, pm, myip, *ghsecret)
+	http.HandleFunc("/github", ghAPI.Post)
 
-		out, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-
-		fields := strings.Fields(string(out))
-		if len(fields) != 2 {
-			http.Error(w, "incorrectly formatted lastpubver in repo", 400)
-			return
-		}
-		vers := fields[0]
-		hash := fields[1]
-
-		flusher := w.(http.Flusher)
-
-		fmt.Fprintln(w, "<!DOCTYPE html>")
-		fmt.Fprintf(w, "<p>pinning %s version %s: %s</p><br>", ghurl, vers, hash)
-		flusher.Flush()
-		refs, err := sh.Refs(hash, true)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-
-		fmt.Fprintln(w, "<ul>")
-		for ref := range refs {
-			fmt.Fprintf(w, "<li>%s</li>", ref)
-			flusher.Flush()
-		}
-		fmt.Fprintln(w, "</ul>")
-
-		fmt.Fprintln(w, "<p>fetched all deps!<br>calling pin now...</p>")
-		flusher.Flush()
-
-		err = sh.Pin(hash)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-
-		err = logPin(ghurl, hash, vers)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("writing log file: %s", err), 500)
-			return
-		}
-
-		fmt.Fprintln(w, "<p>success!</p>")
-		fmt.Fprintln(w, "<a href='/'>back</a>")
-
-		recentlk.Lock()
-		recent[ghurl] = pkgInfo{
-			Url:     ghurl,
-			Hash:    hash,
-			Version: vers,
-		}
-		recentlk.Unlock()
-	})
-
-	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		if sh.IsUp() {
-			fmt.Fprintf(w, "gexpin ipfs daemon is online!")
-		} else {
-			fmt.Fprintf(w, "gexpin ipfs daemon appears to be down. poke @whyrusleeping")
-		}
-	})
-
-	http.HandleFunc("/node_addr", func(w http.ResponseWriter, r *http.Request) {
-		myid, err := sh.ID()
-		if err != nil {
-			http.Error(w, err.Error(), 503)
-			return
-		}
-
-		fmt.Fprintf(w, "/ip4/%s/tcp/4001/ipfs/%s", myip, myid.ID)
-	})
-
-	http.HandleFunc("/recent", func(w http.ResponseWriter, r *http.Request) {
-		recentlk.Lock()
-		var pkgs []pkgInfo
-		for _, p := range recent {
-			pkgs = append(pkgs, p)
-		}
-		recentlk.Unlock()
-		enc := json.NewEncoder(w)
-		err := enc.Encode(pkgs)
-		if err != nil {
-			fmt.Println("json err: ", err)
-			return
-		}
-
-	})
-
+	// serve static files
+	// TODO(geoah) Move files into ./static or something.
 	h := http.FileServer(http.Dir("."))
 	http.Handle("/", h)
 
-	http.ListenAndServe(":9444", nil)
+	// start http server
+	http.ListenAndServe(*listen, nil)
 }
