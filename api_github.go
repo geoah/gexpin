@@ -111,17 +111,7 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// deps, err := api.gx.EnumerateDependencies(pkg)
-		// if err != nil {
-		// 	fmt.Printf("> Could enumerate deps. err=%v\n", err)
-		// 	return
-		// }
-
-		// for hash := range deps {
-		// 	dep := pkg.FindDep(hash)
-		// 	fmt.Println(">> Found dep", dep) // dep.Author, dep.Name, dep.Version, dep.Version)
-		// }
-
+		// TODO(geoah) Refactor this mess.
 		tree := make(map[string]*depTreeNode)
 		deps := []*gx.Dependency{}
 
@@ -153,12 +143,10 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		fmt.Printf("> Found %d dependecies.\n", len(deps))
+		// fmt.Printf("> Found %d dependecies.\n", len(deps))
 
 		conflicts := make(map[string][]*gx.Dependency)
-
 		for _, dep := range deps {
-			// fmt.Println(">> Found dep", i, dep.Author, dep.Name, dep.Version, dep.Hash)
 			for _, idep := range deps {
 				if dep.Author == idep.Author && dep.Name == idep.Name && (dep.Version != idep.Version || dep.Hash != idep.Hash) {
 					fmt.Printf(">> Found conflicting dependecies for %s v%s [%s] \n", dep.Name, dep.Version, dep.Hash)
@@ -180,8 +168,6 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// fmt.Println(conflicts)
-
 		report := ""
 		if len(conflicts) > 0 {
 			report = fmt.Sprintf("Found %d conflicting package/s.\n", len(conflicts))
@@ -195,11 +181,7 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		fmt.Println(report)
-
-		// prs := api.github.PullRequests
-		// opt := &github.PullRequestListCommentsOptions{}
-
+		// get all comments on the PR (issue)
 		iss := api.github.Issues
 		opt := &github.IssueListCommentsOptions{}
 		comments, _, err := iss.ListComments(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, opt)
@@ -208,39 +190,26 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		commentID := 0
+		// find if we have already commented here
 		for _, comment := range comments {
-			if comment.User.Login == ghlogin {
-				commentID = *comment.ID
+			if *comment.User.Login == *ghlogin {
+				// and if so, remove the comment
+				fmt.Println("> We already have a comment on this PR, let's remove it.")
+				_, err := iss.DeleteComment(*event.Repo.Owner.Login, *event.Repo.Name, *comment.ID)
+				if err != nil {
+					fmt.Printf("> Could not remove existing comment on PR. err=%v\n", err)
+				}
 			}
 		}
 
-		if report == "" && commentID != 0 {
-			fmt.Println(">>> No report, but there is a comment; let's remove it.")
-			_, err := iss.DeleteComment(*event.Repo.Owner.Login, *event.Repo.Name, commentID)
-			if err != nil {
-				fmt.Printf(">>> Could not remove existing comment on PR. err=%v\n", err)
-			}
-			return
-		}
-
-		if commentID == 0 {
+		// if there was a report generated, create a comment on the PR (issue)
+		if report != "" {
 			comment := &github.IssueComment{
 				Body: &report,
 			}
-			_, _, err := iss.CreateComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
+			_, _, err = iss.CreateComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
 			if err != nil {
 				fmt.Printf("> Could create new comment on PR. err=%v\n", err)
-				return
-			}
-		} else {
-			comment := &github.IssueComment{
-				ID:   &commentID,
-				Body: &report,
-			}
-			_, _, err := iss.EditComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
-			if err != nil {
-				fmt.Printf("> Could modify existing comment on PR. err=%v\n", err)
 				return
 			}
 		}
