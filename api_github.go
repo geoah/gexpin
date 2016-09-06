@@ -4,28 +4,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	github "github.com/google/go-github/github"
 	ipfs "github.com/ipfs/go-ipfs-api"
+	gx "github.com/whyrusleeping/gx/gxutil"
 )
 
 // GxGithubAPI for Github webhooks
 type GxGithubAPI struct {
 	ipfs          *ipfs.Shell
 	github        *github.Client
+	gx            *gx.PM
 	externalIP    string
 	webhookSecret string
 }
 
-func newGxGithubAPI(ipsh *ipfs.Shell, gh *github.Client, exip, whs string) *GxGithubAPI {
+func newGxGithubAPI(ipsh *ipfs.Shell, gh *github.Client, gxPM *gx.PM, exip, whs string) *GxGithubAPI {
 	return &GxGithubAPI{
 		ipfs:          ipsh,
 		github:        gh,
+		gx:            gxPM,
 		externalIP:    exip,
 		webhookSecret: whs,
 	}
 }
 
+// Post handles all github events
 func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 	payload, err := github.ValidatePayload(r, []byte(api.webhookSecret))
 	if err != nil {
@@ -64,14 +69,16 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 	// get the PR
 	pr := event.PullRequest
 
+	// TOOD(geoah) Extract to a provider or something.
 	// if the PR is still open
 	if *pr.State == "open" {
 		// find an archived version of the HEAD
 		url := fmt.Sprintf("https://github.com/%s/archive/%s.zip", *pr.Head.Repo.FullName, *pr.Head.SHA)
 
-		rootDir := "./tmp/"
-		headZip := rootDir + *pr.Head.SHA + ".zip"
-		headDir := rootDir + *pr.Head.Repo.Name + "-" + *pr.Head.SHA
+		rootDir := "./tmp"
+		headZip := filepath.Join(rootDir, *pr.Head.SHA+".zip")
+		headDir := filepath.Join(rootDir, *pr.Head.Repo.Name+"-"+*pr.Head.SHA)
+		gxPkgFile := filepath.Join(headDir, "package.json")
 
 		defer func() {
 			// TODO(geoah) When all is said and done, clean up
@@ -81,6 +88,7 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		// download it somewhere
+		// TODO(geoah) Handle overwrites
 		fmt.Printf("> Download HEAD from url. url=%s\n", url)
 		err := download(url, headZip)
 		if err != nil {
@@ -88,6 +96,7 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// TODO(geoah) Handle existing destination
 		err = unzip(headZip, rootDir)
 		if err != nil {
 			fmt.Printf("> Could not unzip HEAD. err=%v\n", err)
@@ -95,6 +104,20 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fmt.Printf("> We now have the unziped HEAD in %s\n", headDir)
+
+		pkg, err := LoadPackageFile(gxPkgFile)
+		if err != nil {
+			fmt.Printf("> Could not read GX package. err=%v\n", err)
+			return
+		}
+
+		deps, err := api.gx.EnumerateDependencies(pkg)
+		if err != nil {
+			fmt.Printf("> Could enumerate deps. err=%v\n", err)
+			return
+		}
+
+		fmt.Printf("> Found %d dependecies. deps=%#v;\n", len(deps), deps)
 	}
 
 }
