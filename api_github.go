@@ -111,13 +111,107 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		deps, err := api.gx.EnumerateDependencies(pkg)
+		// deps, err := api.gx.EnumerateDependencies(pkg)
+		// if err != nil {
+		// 	fmt.Printf("> Could enumerate deps. err=%v\n", err)
+		// 	return
+		// }
+
+		// for hash := range deps {
+		// 	dep := pkg.FindDep(hash)
+		// 	fmt.Println(">> Found dep", dep) // dep.Author, dep.Name, dep.Version, dep.Version)
+		// }
+
+		tree := make(map[string]*depTreeNode)
+		deps := []*gx.Dependency{}
+
+		var rec func(pkg *gx.Package) (*depTreeNode, error)
+		rec = func(pkg *gx.Package) (*depTreeNode, error) {
+			cur := new(depTreeNode)
+			cur.this = new(gx.Dependency)
+			err := pkg.ForEachDep(func(dep *gx.Dependency, dpkg *gx.Package) error {
+				deps = append(deps, dep)
+				sub := tree[dep.Hash]
+				if sub == nil {
+					var err error
+					sub, err = rec(dpkg)
+					if err != nil {
+						return err
+					}
+					tree[dep.Hash] = sub
+				}
+				sub.this = dep
+				cur.children = append(cur.children, sub)
+				return nil
+			})
+			return cur, err
+		}
+
+		_, err = rec(pkg)
 		if err != nil {
-			fmt.Printf("> Could enumerate deps. err=%v\n", err)
+			fmt.Printf("> Could get all GX deps. err=%v\n", err)
 			return
 		}
 
-		fmt.Printf("> Found %d dependecies. deps=%#v;\n", len(deps), deps)
+		fmt.Printf("> Found %d dependecies.\n", len(deps))
+
+		conflicts := make(map[string][]*gx.Dependency)
+
+		for _, dep := range deps {
+			// fmt.Println(">> Found dep", i, dep.Author, dep.Name, dep.Version, dep.Hash)
+			for _, idep := range deps {
+				if dep.Author == idep.Author && dep.Name == idep.Name && (dep.Version != idep.Version || dep.Hash != idep.Hash) {
+					fmt.Printf(">> Found conflicting dependecies for %s v%s [%s] \n", dep.Name, dep.Version, dep.Hash)
+					if _, ok := conflicts[dep.Name]; !ok {
+						conflicts[dep.Name] = make([]*gx.Dependency, 0)
+					}
+					exists := false
+					for _, cd := range conflicts[dep.Name] {
+						if cd.Hash == dep.Hash {
+							fmt.Println(">>> ", conflicts[dep.Name], cd.Hash, dep.Hash)
+							exists = true
+							break
+						}
+					}
+					if exists == false {
+						conflicts[dep.Name] = append(conflicts[dep.Name], dep)
+					}
+				}
+			}
+		}
+
+		// fmt.Println(conflicts)
+
+		report := ""
+		if len(conflicts) > 0 {
+			report = fmt.Sprintf("Found %d conflicting package/s.\n", len(conflicts))
+			for _, conflict := range conflicts {
+				if len(conflict) > 1 {
+					report += fmt.Sprintf("* Package %s:\n", conflict[0].Name)
+					for _, c := range conflict {
+						report += fmt.Sprintf("  * %s [%s]\n", c.Version, c.Hash)
+					}
+				}
+			}
+		}
+
+		fmt.Println(report)
+
+		if report != "" {
+			path := "package.json"
+			pos := 1
+			comment := &github.PullRequestComment{
+				Body:     &report,
+				CommitID: pr.Head.SHA,
+				Path:     &path,
+				Position: &pos,
+			}
+			_, _, err := api.github.PullRequests.CreateComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
+			if err != nil {
+				fmt.Printf("> Could comment on PR. err=%v\n", err)
+				return
+			}
+		}
 	}
 
 }

@@ -8,6 +8,11 @@ import (
 
 const PkgFileName = gx.PkgFileName
 
+type depTreeNode struct {
+	this     *gx.Dependency
+	children []*depTreeNode
+}
+
 func LoadPackageFile(path string) (*gx.Package, error) {
 	if path == PkgFileName {
 		root, err := gx.GetPackageRoot()
