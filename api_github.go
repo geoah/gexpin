@@ -197,35 +197,52 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Println(report)
 
-		prs := api.github.PullRequests
+		// prs := api.github.PullRequests
+		// opt := &github.PullRequestListCommentsOptions{}
 
-		opt := &github.PullRequestListCommentsOptions{}
-		comments, _, err := prs.ListComments(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, opt)
+		iss := api.github.Issues
+		opt := &github.IssueListCommentsOptions{}
+		comments, _, err := iss.ListComments(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, opt)
 		if err != nil {
 			fmt.Printf("> Could list comments on PR. err=%v\n", err)
 			return
 		}
 
-		// replyTo := 0
+		commentID := 0
 		for _, comment := range comments {
-			fmt.Println(">>> Comment", *comment.CommitID, *comment.Position, *comment.User.Login, *comment.Body)
+			if comment.User.Login == ghlogin {
+				commentID = *comment.ID
+			}
 		}
 
-		if report != "" {
-			path := "package.json"
-			pos := 1
-			comment := &github.PullRequestComment{
-				Body:     &report,
-				CommitID: pr.Head.SHA,
-				Path:     &path,
-				Position: &pos,
-			}
-			_, _, err := api.github.PullRequests.CreateComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
+		if report == "" && commentID != 0 {
+			fmt.Println(">>> No report, but there is a comment; let's remove it.")
+			_, err := iss.DeleteComment(*event.Repo.Owner.Login, *event.Repo.Name, commentID)
 			if err != nil {
-				fmt.Printf("> Could comment on PR. err=%v\n", err)
+				fmt.Printf(">>> Could not remove existing comment on PR. err=%v\n", err)
+			}
+			return
+		}
+
+		if commentID == 0 {
+			comment := &github.IssueComment{
+				Body: &report,
+			}
+			_, _, err := iss.CreateComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
+			if err != nil {
+				fmt.Printf("> Could create new comment on PR. err=%v\n", err)
+				return
+			}
+		} else {
+			comment := &github.IssueComment{
+				ID:   &commentID,
+				Body: &report,
+			}
+			_, _, err := iss.EditComment(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, comment)
+			if err != nil {
+				fmt.Printf("> Could modify existing comment on PR. err=%v\n", err)
 				return
 			}
 		}
 	}
-
 }

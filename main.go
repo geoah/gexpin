@@ -25,6 +25,7 @@ var recent map[string]pkgInfo
 var lk sync.Mutex
 
 var log *os.File
+var ghlogin *string
 
 const pinlogFile = "pinlogs"
 
@@ -53,6 +54,7 @@ func main() {
 	listen := flag.String("listen", ":9444", "github token for stuff")
 	ghtoken := flag.String("ghtoken", "", "github token for stuff")
 	ghsecret := flag.String("ghsecret", "", "github token for stuff")
+	ghlogin = flag.String("ghlogin", "geoah", "github bot login name") // TODO(geoah) Get this from the API
 	flag.Parse()
 
 	// find our external IP address
