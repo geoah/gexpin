@@ -170,7 +170,7 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 
 		report := ""
 		if len(conflicts) > 0 {
-			report = fmt.Sprintf("Found %d conflicting package/s.\n", len(conflicts))
+			report = "Found one or more conflicting package/s.\n"
 			for _, conflict := range conflicts {
 				if len(conflict) > 1 {
 					report += fmt.Sprintf("* Package %s:\n", conflict[0].Name)
