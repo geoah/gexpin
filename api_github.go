@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 
 	github "github.com/google/go-github/github"
@@ -80,15 +81,14 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 		headDir := filepath.Join(rootDir, *pr.Head.Repo.Name+"-"+*pr.Head.SHA)
 		gxPkgFile := filepath.Join(headDir, "package.json")
 
+		// when all is said and done, clean up
 		defer func() {
-			// TODO(geoah) When all is said and done, clean up
 			fmt.Printf("> Removing stuff around %s\n", headDir)
-			// os.RemoveAll(headZip)
-			// os.RemoveAll(headDir)
+			os.RemoveAll(headZip)
+			os.RemoveAll(headDir)
 		}()
 
 		// download it somewhere
-		// TODO(geoah) Handle overwrites
 		fmt.Printf("> Download HEAD from url. url=%s\n", url)
 		err := download(url, headZip)
 		if err != nil {
@@ -96,7 +96,6 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// TODO(geoah) Handle existing destination
 		err = unzip(headZip, rootDir)
 		if err != nil {
 			fmt.Printf("> Could not unzip HEAD. err=%v\n", err)
