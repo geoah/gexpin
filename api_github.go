@@ -197,6 +197,20 @@ func (api *GxGithubAPI) Post(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Println(report)
 
+		prs := api.github.PullRequests
+
+		opt := &github.PullRequestListCommentsOptions{}
+		comments, _, err := prs.ListComments(*event.Repo.Owner.Login, *event.Repo.Name, *event.Number, opt)
+		if err != nil {
+			fmt.Printf("> Could list comments on PR. err=%v\n", err)
+			return
+		}
+
+		// replyTo := 0
+		for _, comment := range comments {
+			fmt.Println(">>> Comment", *comment.CommitID, *comment.Position, *comment.User.Login, *comment.Body)
+		}
+
 		if report != "" {
 			path := "package.json"
 			pos := 1
